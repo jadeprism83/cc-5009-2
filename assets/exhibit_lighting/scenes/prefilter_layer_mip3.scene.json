@@ -1,0 +1,13 @@
+{
+  "format_version": 1,
+  "name": "预过滤层对照（mip 3）",
+  "notes": "强制 mip 3（粗糙度 0.5）并显示预过滤层原始 HDR；旋转环境可见反射亮区随方向移动，与 mip 0 场景对照扩散程度。",
+  "asset_manifest": "../assets/directed_key/manifest.json",
+  "env_rotation_deg": 0.0,
+  "exhibit": "Sphere",
+  "exhibit_rotation_deg": 0.0,
+  "exposure": 0.55,
+  "debug_mode": 1,
+  "forced_lod": 3.0,
+  "show_ground": true
+}

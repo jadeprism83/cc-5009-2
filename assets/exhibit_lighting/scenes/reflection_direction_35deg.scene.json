@@ -1,0 +1,13 @@
+{
+  "format_version": 1,
+  "name": "反射方向对照（环境旋转 35°）",
+  "notes": "球体上的亮斑来自主光。环境旋转 +35° 后最亮方位角应减少 35°；同一场景可切回 0° 对照反射朝向，同时观察 mip 0 的高光。",
+  "asset_manifest": "../assets/directed_key/manifest.json",
+  "env_rotation_deg": 35.0,
+  "exhibit": "Sphere",
+  "exhibit_rotation_deg": 0.0,
+  "exposure": 0.55,
+  "debug_mode": 0,
+  "forced_lod": null,
+  "show_ground": true
+}

@@ -1,0 +1,164 @@
+{
+  "format_version": 1,
+  "id": "directed_key",
+  "name": "定向主光·暗室环境",
+  "notes": "暗室中一盏暖白定向灯（直径约 10° 的亮盘）加一层低能量冷色补光。主光方向固定为方位角 35°、仰角 25°，用于从反射亮斑读出环境方向；补光让粗糙度变化在亮斑之外仍可见。所有数值为线性辐亮度，源文件不做色调映射。",
+  "source": {
+    "path": "../../sources/directed_key_2048x1024.hdr",
+    "width": 2048,
+    "height": 1024,
+    "sha256": "02a08cf7fad4fcbaf26b8144e9cecd067ca1f148bbb8a4c59f780df026cef4ce",
+    "generator": "analytic key+fill（2048×1024）",
+    "params": {
+      "base_radiance": [
+        0.006,
+        0.0065,
+        0.0075
+      ],
+      "key_radiance": [
+        95.0,
+        82.0,
+        64.0
+      ],
+      "key_direction": {
+        "azimuth_deg": 35.0,
+        "elevation_deg": 25.0
+      },
+      "key_radius_deg": 5.0,
+      "fill_radiance": [
+        0.05,
+        0.075,
+        0.12
+      ],
+      "fill_direction": {
+        "azimuth_deg": -140.0,
+        "elevation_deg": 12.0
+      },
+      "fill_radius_deg": 45.0
+    }
+  },
+  "prefilter": {
+    "path": "prefilter_f32.bin",
+    "base_size": 256,
+    "mips": 7,
+    "samples": 256,
+    "roughness_mapping": "roughness = mip / 6（mip 0 锐利，mip 6 全粗糙）",
+    "sha256": "1ce0901582e23de57f029273e90cd5e7799794a92fede16c2373e487e6e14ad3",
+    "byte_len": 6291092
+  },
+  "conventions": {
+    "up_axis": "+Y",
+    "azimuth": "方位角 = atan2(z, x)，从 +X 向 +Z 为正",
+    "elevation": "仰角 = asin(y)，从赤道向 +Y 为正",
+    "equirect": "u = 0.5 + atan2(z, x)/2π，v = acos(y)/π（第 0 行为 +Y）",
+    "environment_rotation": "环境旋转 +θ 把内容绕 +Y 旋转 θ；查询方向用 -θ。最亮方位角随 θ 减少 θ°",
+    "linear": "所有辐亮度均为线性值，未做色调映射；仅显示阶段编码"
+  },
+  "rotation_presets_deg": [
+    0.0,
+    35.0,
+    -60.0,
+    120.0
+  ],
+  "sh": [
+    [
+      2.131874,
+      1.8871183,
+      1.5584953
+    ],
+    [
+      0.9828476,
+      0.8529112,
+      0.67459214
+    ],
+    [
+      1.1762316,
+      0.9999339,
+      0.7509359
+    ],
+    [
+      1.6853305,
+      1.4363189,
+      1.0856912
+    ],
+    [
+      0.5983724,
+      0.51364833,
+      0.3954703
+    ],
+    [
+      0.41841725,
+      0.3588073,
+      0.275545
+    ],
+    [
+      -0.10027567,
+      -0.08418281,
+      -0.061660133
+    ],
+    [
+      0.75339645,
+      0.65793353,
+      0.5283207
+    ],
+    [
+      0.370111,
+      0.32615906,
+      0.26661244
+    ]
+  ],
+  "verification": {
+    "brightest": {
+      "azimuth_deg": 34.96197,
+      "elevation_deg": 25.201254,
+      "radiance": [
+        94.5,
+        81.5,
+        63.5
+      ],
+      "luminance": 82.9642,
+      "key_offset_deg": 0.20367177
+    },
+    "energy": {
+      "source_mean_luminance": 0.1719928,
+      "sh_mean_luminance": 0.17199285,
+      "sh_rel_diff": 3.4655315e-7,
+      "mip6_mean_luminance": 0.17606102,
+      "mip6_rel_diff": 0.023653466
+    },
+    "rotation_checks": [
+      {
+        "rotation_deg": 0.0,
+        "brightest_azimuth_deg": 34.96197,
+        "brightest_elevation_deg": 25.201254,
+        "luminance": 82.9642,
+        "expected_azimuth_deg": 34.96197,
+        "offset_deg": 0.0
+      },
+      {
+        "rotation_deg": 35.0,
+        "brightest_azimuth_deg": -0.038030304,
+        "brightest_elevation_deg": 25.201254,
+        "luminance": 82.9642,
+        "expected_azimuth_deg": -0.038028717,
+        "offset_deg": 0.0000015869737
+      },
+      {
+        "rotation_deg": -60.0,
+        "brightest_azimuth_deg": 94.961975,
+        "brightest_elevation_deg": 25.201254,
+        "luminance": 82.9642,
+        "expected_azimuth_deg": 94.961975,
+        "offset_deg": 0.0
+      },
+      {
+        "rotation_deg": 120.0,
+        "brightest_azimuth_deg": -85.03803,
+        "brightest_elevation_deg": 25.20125,
+        "luminance": 82.9642,
+        "expected_azimuth_deg": -85.038025,
+        "offset_deg": 0.0000076293945
+      }
+    ]
+  }
+}

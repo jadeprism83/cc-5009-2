@@ -1,0 +1,41 @@
+{
+  "format_version": 1,
+  "id": "directed_key",
+  "name": "定向主光·暗室环境",
+  "notes": "暗室中一盏暖白定向灯（直径约 10° 的亮盘）加一层低能量冷色补光。主光方向固定为方位角 35°、仰角 25°，用于从反射亮斑读出环境方向；补光让粗糙度变化在亮斑之外仍可见。所有数值为线性辐亮度，源文件不做色调映射。",
+  "source_width": 2048,
+  "source_height": 1024,
+  "source_path": "sources/directed_key_2048x1024.hdr",
+  "source": {
+    "base_radiance": [0.006, 0.0065, 0.0075],
+    "key_radiance": [95.0, 82.0, 64.0],
+    "key_direction": { "azimuth_deg": 35.0, "elevation_deg": 25.0 },
+    "key_radius_deg": 5.0,
+    "fill_radiance": [0.05, 0.075, 0.12],
+    "fill_direction": { "azimuth_deg": -140.0, "elevation_deg": 12.0 },
+    "fill_radius_deg": 45.0
+  },
+  "prefilter": {
+    "base_size": 256,
+    "mips": 7,
+    "samples": 256,
+    "roughness_mapping": "roughness = mip / 6（mip 0 锐利，mip 6 全粗糙）"
+  },
+  "conventions": {
+    "up_axis": "+Y",
+    "azimuth": "方位角 = atan2(z, x)，从 +X 向 +Z 为正",
+    "elevation": "仰角 = asin(y)，从赤道向 +Y 为正",
+    "equirect": "u = 0.5 + atan2(z, x)/2π，v = acos(y)/π（第 0 行为 +Y）",
+    "environment_rotation": "环境旋转 +θ 把内容绕 +Y 旋转 θ；查询方向用 -θ。最亮方位角随 θ 减少 θ°",
+    "linear": "所有辐亮度均为线性值，未做色调映射；仅显示阶段编码"
+  },
+  "rotation_presets_deg": [0.0, 35.0, -60.0, 120.0],
+  "preview": {
+    "exhibit": "Bronze",
+    "exhibit_rotation_deg": 0.0,
+    "exposure": 0.55,
+    "debug_mode": 0,
+    "forced_lod": null,
+    "show_ground": true
+  }
+}

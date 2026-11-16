@@ -13,17 +13,30 @@ export PATH="$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 export CC=/usr/bin/gcc AR=/usr/bin/ar
 cargo build --release
 
-# 直接打开交互窗口（有真实显示器时）
+# 直接打开交互窗口（有真实显示器时）——默认载入内置的展品光照素材包
 ./target/release/museum-lighting
 
-# 指定环境图
+# 指定素材清单 / 场景文件 / 普通环境图打开
+./target/release/museum-lighting --asset assets/exhibit_lighting/assets/directed_key/manifest.json
+./target/release/museum-lighting --scene assets/exhibit_lighting/scenes/reflection_direction_35deg.scene.json
 ./target/release/museum-lighting --env assets/env/studio_small_09_2k.hdr
 ```
 
-窗口左侧是「展品光照」面板（由展品光照内核驱动的控件），中间是场景。
-关键控件：
+**图形入口**：`museum-lighting`（无参数）就是展品光照的图形入口，启动后自动
+发现并载入 `assets/exhibit_lighting/` 下的素材包与场景。窗口左侧是「展品光照」
+面板（由展品光照内核驱动的控件），中间是场景。关键控件：
 
-- **展品**：陶罐 / 铜器 / 球体测试件 / 立方体测试件 / 圆环测试件。
+- **展品光照素材集**：下拉选择素材包；面板列出源文件、SHA-256、预过滤层数，
+  以及**载入时重新实测**的最亮方向、主光辐亮度与能量核验（源/SH/mip6），
+  并给出「与规格主光偏 X°（阈值 1.5°）」。数值不读清单里的记录值，因此
+  篡改过的素材会在这里报错而不是显示成功。展开项可查看旋转核验、来源与参数、
+  方向约定。
+- **场景**：下拉直接打开 `assets/exhibit_lighting/scenes/` 中的场景文件；场景
+  同时设置环境旋转、展品与调试通道，便于对照反射方向（例如 0° 与 35° 两张
+  场景里高光位置沿方位角移动；粗糙度展板特写用 -71° 把主光反射带放到锐利端）。
+- **复核素材（按规格重建比对）**：从 `spec.json` 重新生成源环境、投影与预过滤
+  数据，与当前素材包逐值比较；不一致时在面板内提示。
+- **展品**：陶罐 / 铜器 / 球体测试件 / 立方体测试件 / 圆环测试件 / 粗糙度展板。
 - **展品世界旋转**：只影响模型矩阵。
 - **环境旋转**：只影响环境方向，与模型旋转相互独立。也可在场景中按住左键
   横向拖动，或用「环境全景」窗口拖动；背景与物体反射同步变化。按住右键或
@@ -44,6 +57,46 @@ cargo build --release
 - **保存画面 PNG** / **运行校验**：写出 `artifacts/scene.png` /
   `artifacts/panorama.png`，或在窗口内显示与 `--verify` 相同的校验结果。
 - 面板底部有「如何启动界面」折叠说明。
+
+## 展品光照素材包
+
+内置素材位于 `assets/exhibit_lighting/`，是一份可直接打开、可重建、可核验的
+真实资源（不是成品图片）：
+
+```
+assets/exhibit_lighting/
+  spec.json                                 素材规格：线性辐亮度、方向约定、预过滤参数
+  sources/directed_key_2048x1024.hdr        自制源 HDR（明亮点源 + 暗环境，线性值）
+  assets/directed_key/prefilter_f32.bin      预过滤辐亮度（7 层 mip，GGX）
+  assets/directed_key/manifest.json         来源/参数/哈希与实测的方向、能量、旋转核验
+  scenes/*.scene.json                       可直接打开的场景（含素材引用与预览参数）
+```
+
+规格要点：暗室基底约 `0.006`，一盏暖白主光 `[95, 82, 64]`、方位角 35°、
+仰角 25°、半径约 5°，另有低能量冷色补光；`roughness = mip / 6`。
+方向约定写在 `spec.json` 的 `conventions` 与清单中：`up = +Y`，
+方位角 `atan2(z, x)`，仰角 `asin(y)`；环境旋转 +θ 使最亮方位角减少 θ。
+
+重建素材（源 HDR、预过滤数据、清单、场景全部从头生成）：
+
+```bash
+./scripts/build_exhibit_lighting_assets.sh --release
+```
+
+脚本会构建并运行 `museum-lighting asset build`（从规格重建），随后运行
+`asset verify`：核对源与预过滤 SHA-256、实测最亮方向与规格主光的偏差
+（阈值 1.5°）、能量（源均值 vs SH 均值 ≤1%，vs mip6 ≤5%）、各旋转预设的
+方位角一致性，以及「按规格重建 → 与素材包逐值相等」。构建与重复运行的结果
+**逐字节相同**（本仓库已验证），因此素材包不是默认值伪装的占位物。
+
+命令行仅用于辅助素材的构建与核验，查看照明请用图形入口：
+
+```bash
+./target/release/museum-lighting                    # 图形入口（自动载入素材包）
+./target/release/museum-lighting asset list         # 列出素材与场景
+./target/release/museum-lighting asset verify       # 载入并复核素材（含所有场景）
+./target/release/museum-lighting asset build        # 仅从规格重建，不开窗口
+```
 
 ## 无窗口校验
 

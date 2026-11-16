@@ -1,0 +1,13 @@
+{
+  "format_version": 1,
+  "name": "粗糙度展板特写（覆盖全部 mip 层）",
+  "notes": "粗糙度展板从左到右由锐利到粗糙。环境旋转 -71° 把主光反射带放到左侧锐利端：左侧是窄而亮的高光，向右随粗糙度增大而扩散变柔；横向拖动可看到整条高光带随方向移动。",
+  "asset_manifest": "../assets/directed_key/manifest.json",
+  "env_rotation_deg": -71.0,
+  "exhibit": "Ramp",
+  "exhibit_rotation_deg": 0.0,
+  "exposure": 0.045,
+  "debug_mode": 0,
+  "forced_lod": null,
+  "show_ground": true
+}

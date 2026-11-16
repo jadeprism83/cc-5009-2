@@ -8,6 +8,8 @@
 //! `--verify` runs the same kernel headlessly, writes verification images and
 //! a report, then exits.
 
+mod asset;
+mod asset_cli;
 mod cache;
 mod env;
 mod geometry;
@@ -38,6 +40,7 @@ const FONT_BYTES: &[u8] = include_bytes!("../assets/fonts/wqy-microhei.ttc");
 enum EnvJob {
     Load(PathBuf),
     Generate(TestPattern),
+    Asset(PathBuf),
 }
 
 struct EnvResult {
@@ -45,7 +48,10 @@ struct EnvResult {
     image: Option<HdrImage>,
     precomputed: Option<Precomputed>,
     meta: Option<EnvMeta>,
-    error: Option<EnvError>,
+    error: Option<String>,
+    /// Present when the job loaded a bundled asset; the panel shows its
+    /// recomputed checks and the loader's own verification.
+    asset: Option<Box<asset::LoadedAsset>>,
 }
 
 struct EnvWorker {
@@ -65,6 +71,7 @@ impl EnvWorker {
                 let result = match job {
                     EnvJob::Load(path) => run_load(&path, &settings, &prog),
                     EnvJob::Generate(pattern) => run_generate(pattern, &settings, &prog),
+                    EnvJob::Asset(path) => run_asset(&path),
                 };
                 let _ = res_tx.send(result);
             }
@@ -120,7 +127,8 @@ fn run_load(
         image: None,
         precomputed: None,
         meta: None,
-        error: Some(error),
+        error: Some(error.to_string()),
+        asset: None,
     };
     if let Err(e) = env::validate_format(path) {
         return fail(e, path.display().to_string());
@@ -144,6 +152,7 @@ fn run_load(
             precomputed: Some(p),
             meta: Some(meta),
             error: None,
+            asset: None,
         },
         Err(e) => fail(e, path.display().to_string()),
     }
@@ -165,13 +174,36 @@ fn run_generate(
             precomputed: Some(p),
             meta: Some(meta),
             error: None,
+            asset: None,
         },
         Err(e) => EnvResult {
             source_name: label.to_string(),
             image: None,
             precomputed: None,
             meta: None,
-            error: Some(e),
+            error: Some(e.to_string()),
+            asset: None,
+        },
+    }
+}
+
+fn run_asset(manifest: &Path) -> EnvResult {
+    match asset::load_asset(manifest) {
+        Ok(loaded) => EnvResult {
+            source_name: format!("素材 {}（{}）", loaded.manifest.id, loaded.manifest.name),
+            image: Some(loaded.image.clone()),
+            precomputed: Some(loaded.precomputed.clone()),
+            meta: Some(loaded.meta.clone()),
+            error: None,
+            asset: Some(Box::new(loaded)),
+        },
+        Err(e) => EnvResult {
+            source_name: manifest.display().to_string(),
+            image: None,
+            precomputed: None,
+            meta: None,
+            error: Some(format!("素材载入失败：{e}")),
+            asset: None,
         },
     }
 }
@@ -228,6 +260,14 @@ struct AppState {
     last_error: Option<String>,
     last_info: Option<String>,
     env_path_input: String,
+    /// Path of the currently displayed asset manifest, if any. Asset loads are
+    /// explicit: the panel shows which facts were recomputed at load time.
+    asset_manifest: Option<PathBuf>,
+    asset_status: Option<asset::LoadedAsset>,
+    asset_choices: Vec<asset::AssetEntry>,
+    asset_choice: Option<PathBuf>,
+    scene_choices: Vec<asset::SceneEntry>,
+    scene_choice: Option<PathBuf>,
 
     reference: Option<ReferenceView>,
     reference_auto: bool,
@@ -266,6 +306,12 @@ impl AppState {
             last_error: None,
             last_info: None,
             env_path_input: DEFAULT_ENV.to_string(),
+            asset_manifest: None,
+            asset_status: None,
+            asset_choices: asset::discover_assets(Path::new(asset::DEFAULT_ASSET_ROOT)),
+            asset_choice: None,
+            scene_choices: asset::discover_scenes(Path::new(asset::DEFAULT_ASSET_ROOT)),
+            scene_choice: None,
             reference: None,
             reference_auto: true,
             reference_dirty: true,
@@ -316,17 +362,41 @@ impl AppState {
         self.source_elapsed_ms = 0.0;
         if let Some(p) = &result.precomputed {
             self.precompute_ms = Some(p.compute_ms);
-            self.precompute_from_cache = p.built_from_cache;
+            self.precompute_from_cache = matches!(p.origin, cache::PrecomputeOrigin::DiskCache);
         }
         self.precomputed = result.precomputed;
         self.image = result.image;
+        self.asset_status = result.asset.map(|b| *b);
+        self.asset_manifest = self
+            .asset_status
+            .as_ref()
+            .map(|a| a.manifest_path.clone());
+        if let Some(choice) = &self.asset_manifest {
+            self.asset_choice = Some(choice.clone());
+        }
         self.reference_dirty = true;
         self.verification.clear();
-        self.last_info = Some(format!(
-            "已载入 {}（预计算 {:.1} ms）",
-            self.env_source,
-            self.precompute_ms.unwrap_or(0.0)
-        ));
+        self.last_info = Some(match &self.asset_status {
+            Some(a) => format!(
+                "已载入素材 {}：最亮方向方位角 {:.2}°、仰角 {:.2}°（与主光偏 {:.2}°）；能量偏差 SH {:.2}% / mip6 {:.2}%；载入耗时 {:.0} ms",
+                a.manifest.id,
+                a.measured.brightest.azimuth_deg,
+                a.measured.brightest.elevation_deg,
+                a.measured.brightest.key_offset_deg,
+                a.measured.energy.sh_rel_diff * 100.0,
+                a.measured.energy.mip6_rel_diff * 100.0,
+                a.load_ms
+            ),
+            None => format!(
+                "已载入 {}（预计算 {:.1} ms，{}）",
+                self.env_source,
+                self.precompute_ms.unwrap_or(0.0),
+                self.precomputed
+                    .as_ref()
+                    .map(|p| p.origin.label())
+                    .unwrap_or_default()
+            ),
+        });
     }
 
     fn brightest(&self) -> Option<(glam::Vec3, glam::Vec3)> {
@@ -377,9 +447,12 @@ fn dir_label(dir: glam::Vec3) -> String {
 
 enum UiAction {
     Load(PathBuf),
+    LoadAsset(PathBuf),
+    LoadScene(PathBuf),
     Generate(TestPattern),
     SaveScreenshot,
     Verify,
+    VerifyAsset,
     RebuildReference,
 }
 
@@ -502,7 +575,7 @@ fn lighting_panel(ctx: &egui::Context, state: &mut AppState, progress: (String, 
             ui.small("照明在线性空间计算；这里只决定线性 HDR 如何映射到屏幕");
             let changed = ui
                 .add(
-                    egui::Slider::new(&mut state.exposure, 0.1..=8.0)
+                    egui::Slider::new(&mut state.exposure, 0.01..=8.0)
                         .logarithmic(true)
                         .text("曝光"),
                 )
@@ -594,6 +667,182 @@ fn lighting_panel(ctx: &egui::Context, state: &mut AppState, progress: (String, 
             }
 
             ui.separator();
+            ui.heading("展品光照素材集");
+            ui.small("素材包内含源 HDR、预过滤数据与核验清单；载入时重新计算并核对方向与能量");
+            if state.asset_choices.is_empty() {
+                ui.colored_label(
+                    egui::Color32::from_rgb(240, 180, 100),
+                    format!(
+                        "未发现素材包（{}）。可运行：\n\
+                         museum-lighting asset build",
+                        asset::DEFAULT_ASSET_ROOT
+                    ),
+                );
+            } else {
+                let current = state
+                    .asset_choice
+                    .as_ref()
+                    .and_then(|p| {
+                        state
+                            .asset_choices
+                            .iter()
+                            .find(|a| &a.manifest_path == p)
+                    })
+                    .map(|a| format!("{} — {}", a.id, a.name))
+                    .unwrap_or_else(|| "选择素材…".to_string());
+                egui::ComboBox::from_id_salt("asset_choice")
+                    .selected_text(current)
+                    .width(280.0)
+                    .show_ui(ui, |ui| {
+                        for a in &state.asset_choices {
+                            let selected = state
+                                .asset_choice
+                                .as_ref()
+                                .map(|p| p == &a.manifest_path)
+                                .unwrap_or(false);
+                            if ui
+                                .selectable_label(
+                                    selected,
+                                    format!("{} — {}", a.id, a.name),
+                                )
+                                .clicked()
+                            {
+                                actions.push(UiAction::LoadAsset(a.manifest_path.clone()));
+                            }
+                        }
+                    });
+            }
+            if let Some(loaded) = &state.asset_status {
+                let m = &loaded.manifest;
+                let v = &loaded.measured;
+                egui::Grid::new("asset_meta").num_columns(2).show(ui, |ui| {
+                    ui.label("素材");
+                    ui.label(format!("{}（{}）", m.id, m.name));
+                    ui.end_row();
+                    ui.label("源环境");
+                    ui.label(format!(
+                        "{} · {}×{}",
+                        m.source.path, m.source.width, m.source.height
+                    ));
+                    ui.end_row();
+                    ui.label("源 SHA-256");
+                    ui.label(
+                        egui::RichText::new(&m.source.sha256[..16]).monospace().small(),
+                    );
+                    ui.end_row();
+                    ui.label("预过滤");
+                    ui.label(format!(
+                        "{} mip · {} 面 · 采样 {} · {} MB",
+                        m.prefilter.mips,
+                        CUBE_FACES,
+                        m.prefilter.samples,
+                        m.prefilter.byte_len as f64 / 1e6
+                    ));
+                    ui.end_row();
+                    ui.label("实测最亮方向");
+                    ui.label(format!(
+                        "方位角 {:+.2}°，仰角 {:+.2}°",
+                        v.brightest.azimuth_deg, v.brightest.elevation_deg
+                    ));
+                    ui.end_row();
+                    ui.label("与规格主光");
+                    ui.label(format!("偏 {:.2}°（阈值 {:.1}°）", v.brightest.key_offset_deg, asset::KEY_DIRECTION_TOLERANCE_DEG));
+                    ui.end_row();
+                    ui.label("主光辐亮度");
+                    ui.label(format!(
+                        "{:.2}, {:.2}, {:.2}（亮度 {:.2}）",
+                        v.brightest.radiance[0],
+                        v.brightest.radiance[1],
+                        v.brightest.radiance[2],
+                        v.brightest.luminance
+                    ));
+                    ui.end_row();
+                    ui.label("能量核验");
+                    ui.label(format!(
+                        "源 {:.4} / SH {:.4}（{:.2}%）/ mip6 {:.4}（{:.2}%）",
+                        v.energy.source_mean_luminance,
+                        v.energy.sh_mean_luminance,
+                        v.energy.sh_rel_diff * 100.0,
+                        v.energy.mip6_mean_luminance,
+                        v.energy.mip6_rel_diff * 100.0
+                    ));
+                    ui.end_row();
+                });
+                ui.small("以上数值由载入时的预过滤数据与源环境重新计算，不读清单里的记录值");
+                egui::CollapsingHeader::new("旋转核验（反射朝向，随环境旋转）")
+                    .default_open(false)
+                    .show(ui, |ui| {
+                        for r in &v.rotation_checks {
+                            ui.small(format!(
+                                "旋转 {:+7.1}° → 实测最亮方位角 {:+7.2}°，期望 {:+7.2}°（偏差 {:.3}°）",
+                                r.rotation_deg,
+                                r.brightest_azimuth_deg,
+                                r.expected_azimuth_deg,
+                                r.offset_deg
+                            ));
+                        }
+                    });
+                egui::CollapsingHeader::new("来源与参数")
+                    .default_open(false)
+                    .show(ui, |ui| {
+                        ui.small(format!("说明：{}", m.notes));
+                        ui.small(format!("生成器：{}", m.source.generator));
+                        ui.small(format!(
+                            "主光：辐亮度 {:.2}, {:.2}, {:.2}，方位角 {:.1}°，仰角 {:.1}°，半径 {:.1}°",
+                            m.source.params.key_radiance[0],
+                            m.source.params.key_radiance[1],
+                            m.source.params.key_radiance[2],
+                            m.source.params.key_direction.azimuth_deg,
+                            m.source.params.key_direction.elevation_deg,
+                            m.source.params.key_radius_deg
+                        ));
+                        ui.small(format!(
+                            "暗环境：基底 {:.4}, {:.4}, {:.4}；补光 {:.3}, {:.3}, {:.3}",
+                            m.source.params.base_radiance[0],
+                            m.source.params.base_radiance[1],
+                            m.source.params.base_radiance[2],
+                            m.source.params.fill_radiance[0],
+                            m.source.params.fill_radiance[1],
+                            m.source.params.fill_radiance[2]
+                        ));
+                        ui.small(format!("粗糙度约定：{}", m.prefilter.roughness_mapping));
+                        ui.small(format!(
+                            "方向约定：{}；{}；{}",
+                            m.conventions.up_axis,
+                            m.conventions.azimuth,
+                            m.conventions.elevation
+                        ));
+                        ui.small(format!("环境旋转：{}", m.conventions.environment_rotation));
+                    });
+            }
+            if !state.scene_choices.is_empty() {
+                ui.add_space(4.0);
+                ui.label("场景（图形入口，可直接打开）");
+                let current = state
+                    .scene_choice
+                    .as_ref()
+                    .and_then(|p| state.scene_choices.iter().find(|s| &s.path == p))
+                    .map(|s| s.name.clone())
+                    .unwrap_or_else(|| "选择场景…".to_string());
+                egui::ComboBox::from_id_salt("scene_choice")
+                    .selected_text(current)
+                    .width(280.0)
+                    .show_ui(ui, |ui| {
+                        for s in &state.scene_choices {
+                            let selected = state
+                                .scene_choice
+                                .as_ref()
+                                .map(|p| p == &s.path)
+                                .unwrap_or(false);
+                            if ui.selectable_label(selected, &s.name).clicked() {
+                                actions.push(UiAction::LoadScene(s.path.clone()));
+                            }
+                        }
+                    });
+                ui.small("场景同时设置环境旋转、展品与调试通道，便于对照反射方向");
+            }
+
+            ui.separator();
             ui.heading("环境文件");
             ui.horizontal(|ui| {
                 if ui.button("重新载入默认环境").clicked() {
@@ -645,6 +894,16 @@ fn lighting_panel(ctx: &egui::Context, state: &mut AppState, progress: (String, 
                 }
                 if ui.button("运行校验").clicked() {
                     actions.push(UiAction::Verify);
+                }
+                if state.asset_status.is_some()
+                    && ui
+                        .button("复核素材（按规格重建比对）")
+                        .on_hover_text(
+                            "从规格重新生成源环境与预过滤数据，与当前素材包逐值比较",
+                        )
+                        .clicked()
+                {
+                    actions.push(UiAction::VerifyAsset);
                 }
             });
             if !state.verification.is_empty() {
@@ -718,6 +977,44 @@ impl App {
             gpu: None,
             renderer: None,
             state: AppState::new(settings),
+            worker,
+            screenshot_pending: false,
+        }
+    }
+
+    /// Start with a bundled asset package. The default path is the packaged
+    /// `directed_key` asset; when a scene is given its preview settings are
+    /// applied as soon as the window and GPU are up.
+    fn new_asset(
+        settings: PrecomputeSettings,
+        manifest: PathBuf,
+        scene: Option<PathBuf>,
+    ) -> Self {
+        let worker = EnvWorker::new(settings.clone());
+        let _ = worker.request(
+            EnvJob::Asset(manifest.clone()),
+            manifest.display().to_string(),
+        );
+        let mut state = AppState::new(settings);
+        state.asset_manifest = Some(manifest.clone());
+        state.asset_choice = Some(manifest.clone());
+        if let Some(scene_path) = scene {
+            if let Ok((scene, _)) = asset::load_scene(&scene_path) {
+                state.exhibit = scene.exhibit;
+                state.exhibit_rotation_deg = scene.exhibit_rotation_deg;
+                state.env_rotation_deg = scene.env_rotation_deg;
+                state.exposure = scene.exposure;
+                state.debug_mode = scene.debug_mode.min(6);
+                state.forced_lod = scene.forced_lod.map(|l| l.clamp(0.0, 6.0));
+                state.show_ground = scene.show_ground;
+                state.scene_choice = Some(scene_path);
+            }
+        }
+        Self {
+            window: None,
+            gpu: None,
+            renderer: None,
+            state,
             worker,
             screenshot_pending: false,
         }
@@ -932,6 +1229,57 @@ impl App {
                         self.state.last_error = None;
                     }
                 }
+                UiAction::LoadAsset(path) => {
+                    if let Err(e) = self
+                        .worker
+                        .request(EnvJob::Asset(path.clone()), path.display().to_string())
+                    {
+                        self.state.last_error = Some(e);
+                    } else {
+                        self.state.asset_manifest = Some(path.clone());
+                        self.state.asset_choice = Some(path.clone());
+                        self.state.last_info =
+                            Some(format!("正在载入素材 {} …", path.display()));
+                        self.state.last_error = None;
+                    }
+                }
+                UiAction::LoadScene(path) => {
+                    match asset::load_scene(&path) {
+                        Ok((scene, manifest)) => {
+                            self.state.scene_choice = Some(path.clone());
+                            self.state.asset_choice = Some(manifest.clone());
+                            if let Err(e) = self
+                                .worker
+                                .request(EnvJob::Asset(manifest), scene.name.clone())
+                            {
+                                self.state.last_error = Some(e);
+                            } else {
+                                self.state.exhibit = scene.exhibit;
+                                self.state.exhibit_rotation_deg = scene.exhibit_rotation_deg;
+                                self.state.env_rotation_deg = scene.env_rotation_deg;
+                                self.state.exposure = scene.exposure;
+                                self.state.debug_mode = scene.debug_mode.min(6);
+                                self.state.forced_lod =
+                                    scene.forced_lod.map(|l| l.clamp(0.0, 6.0));
+                                self.state.show_ground = scene.show_ground;
+                                self.state.reference_dirty = true;
+                                self.state.last_info =
+                                    Some(format!("正在载入场景 {} …", scene.name));
+                                self.state.last_error = None;
+                            }
+                        }
+                        Err(e) => {
+                            let current = if self.state.env_source.is_empty() {
+                                "无环境".to_string()
+                            } else {
+                                self.state.env_source.clone()
+                            };
+                            self.state.last_error = Some(format!(
+                                "场景载入失败：{e}（当前仍显示：{current}）"
+                            ));
+                        }
+                    }
+                }
                 UiAction::Generate(pattern) => {
                     let label = test_pattern_label(pattern).to_string();
                     if let Err(e) = self.worker.request(EnvJob::Generate(pattern), label.clone()) {
@@ -944,8 +1292,64 @@ impl App {
                 UiAction::SaveScreenshot => self.screenshot_pending = true,
                 UiAction::Verify => {
                     if let Some(p) = &self.state.precomputed {
-                        self.state.verification =
+                        let mut lines =
                             verify_kernel(p, self.state.env_rotation(), &self.state.settings);
+                        if let Some(a) = &self.state.asset_status {
+                            let v = &a.measured;
+                            lines.push(format!(
+                                "素材 {} 实测：最亮方位角 {:+.2}°、仰角 {:+.2}°（偏主光 {:.2}°）；SH 偏差 {:.3}%，mip6 偏差 {:.3}%",
+                                a.manifest.id,
+                                v.brightest.azimuth_deg,
+                                v.brightest.elevation_deg,
+                                v.brightest.key_offset_deg,
+                                v.energy.sh_rel_diff * 100.0,
+                                v.energy.mip6_rel_diff * 100.0
+                            ));
+                        }
+                        self.state.verification = lines;
+                    }
+                }
+                UiAction::VerifyAsset => {
+                    let Some(a) = self.state.asset_status.clone() else {
+                        self.state.last_error =
+                            Some("当前不是素材包；先在「展品光照素材集」中载入一个素材".into());
+                        continue;
+                    };
+                    let spec = Path::new(asset::DEFAULT_SPEC);
+                    match asset::rebuild_evidence(&a.manifest_path, spec, &a) {
+                        Ok(ev) => {
+                            let mut lines = vec![format!(
+                                "素材 {} 重建复核：源哈希 {}，预过滤最大绝对差 {:.3e}，SH 最大绝对差 {:.3e}，核验记录{}",
+                                a.manifest.id,
+                                if ev.source_sha_matches { "相同" } else { "不同" },
+                                ev.max_prefilter_diff,
+                                ev.max_sh_diff,
+                                if ev.verification_matches { "一致" } else { "不一致" }
+                            )];
+                            for r in &a.measured.rotation_checks {
+                                lines.push(format!(
+                                    "旋转 {:+7.1}° → 最亮方位角 {:+7.2}°，期望 {:+7.2}°，偏差 {:.3}°",
+                                    r.rotation_deg,
+                                    r.brightest_azimuth_deg,
+                                    r.expected_azimuth_deg,
+                                    r.offset_deg
+                                ));
+                            }
+                            if !ev.source_sha_matches || ev.max_prefilter_diff > 1e-6 {
+                                self.state.last_error = Some(format!(
+                                    "重建结果与素材包不一致：素材包不是由 {} 生成的",
+                                    spec.display()
+                                ));
+                            } else {
+                                self.state.last_info =
+                                    Some("素材重建复核通过：素材包与当前规格逐值一致".into());
+                                self.state.last_error = None;
+                            }
+                            self.state.verification = lines;
+                        }
+                        Err(e) => {
+                            self.state.last_error = Some(format!("素材重建复核失败：{e}"));
+                        }
                     }
                 }
                 UiAction::RebuildReference => {
@@ -1304,12 +1708,8 @@ fn verify_kernel(
         precomputed.prefilter.len() - 1
     ));
     log.push(format!(
-        "缓存来源：{}",
-        if precomputed.built_from_cache {
-            "磁盘缓存命中（确定性重载）"
-        } else {
-            "本次重建"
-        }
+        "预计算来源：{}",
+        precomputed.origin.label()
     ));
     let probe_dir = glam::Vec3::new(0.4, 0.55, -0.3).normalize();
     for (i, mip) in precomputed.prefilter.iter().enumerate() {
@@ -1514,6 +1914,115 @@ fn run_headless(
     Ok(())
 }
 
+fn run_headless_asset(
+    manifest_path: &Path,
+    out_dir: &Path,
+    _settings: &PrecomputeSettings,
+) -> anyhow::Result<()> {
+    std::fs::create_dir_all(out_dir)?;
+    let loaded = asset::load_asset(manifest_path)
+        .map_err(|e| anyhow::anyhow!("素材载入失败：{e}"))?;
+    let m = &loaded.manifest;
+    let v = &loaded.measured;
+    let mut log = Vec::new();
+    log.push(format!(
+        "素材 {}（{}）载入 {:.0} ms",
+        m.id, m.name, loaded.load_ms
+    ));
+    log.push(format!(
+        "源环境 {}（{}×{}，SHA-256 {}…）",
+        m.source.path,
+        m.source.width,
+        m.source.height,
+        &m.source.sha256[..16]
+    ));
+    log.push(format!(
+        "预过滤 {}（{} mip，采样 {}，{} 字节，SHA-256 {}…）",
+        m.prefilter.path,
+        m.prefilter.mips,
+        m.prefilter.samples,
+        m.prefilter.byte_len,
+        &m.prefilter.sha256[..16]
+    ));
+    log.push(format!(
+        "实测最亮方向：方位角 {:+.2}°，仰角 {:+.2}°；主光偏角 {:.2}°（阈值 {:.1}°）",
+        v.brightest.azimuth_deg,
+        v.brightest.elevation_deg,
+        v.brightest.key_offset_deg,
+        asset::KEY_DIRECTION_TOLERANCE_DEG
+    ));
+    log.push(format!(
+        "主光辐亮度：{:.3}, {:.3}, {:.3}（亮度 {:.3}）",
+        v.brightest.radiance[0],
+        v.brightest.radiance[1],
+        v.brightest.radiance[2],
+        v.brightest.luminance
+    ));
+    log.push(format!(
+        "能量：源平均 {:.5} / SH 平均 {:.5}（偏差 {:.3}%）/ mip6 平均 {:.5}（偏差 {:.3}%）",
+        v.energy.source_mean_luminance,
+        v.energy.sh_mean_luminance,
+        v.energy.sh_rel_diff * 100.0,
+        v.energy.mip6_mean_luminance,
+        v.energy.mip6_rel_diff * 100.0
+    ));
+    for r in &v.rotation_checks {
+        log.push(format!(
+            "旋转 {:+7.1}° → 实测最亮方位角 {:+7.2}°，期望 {:+7.2}°，偏差 {:.3}°",
+            r.rotation_deg,
+            r.brightest_azimuth_deg,
+            r.expected_azimuth_deg,
+            r.offset_deg
+        ));
+    }
+
+    // CPU reference from the asset payload; proves the material preview can be
+    // produced from the package alone.
+    let ref_path = out_dir.join("asset_reference.png");
+    let ref_img = reference::render(
+        &loaded.precomputed,
+        &reference::ReferenceSettings {
+            width: 640,
+            height: 480,
+            camera: Camera::default(),
+            exhibit: ExhibitKind::Pottery,
+            material: geometry::material_for(ExhibitKind::Pottery),
+            exhibit_rotation: 0.0,
+            env_rotation: 0.0,
+            exposure: 1.0,
+            forced_roughness: None,
+        },
+    );
+    image::save_buffer(
+        &ref_path,
+        &ref_img.rgb8,
+        ref_img.width,
+        ref_img.height,
+        image::ColorType::Rgb8,
+    )?;
+    log.push(format!(
+        "CPU 参考图 {}，最亮方向 {}",
+        ref_path.display(),
+        dir_label(ref_img.brightest_dir)
+    ));
+
+    // Instrumented kernel checks (same code the panel's 校验 button runs).
+    log.extend(verify_kernel(
+        &loaded.precomputed,
+        0.0,
+        &PrecomputeSettings::default(),
+    ));
+
+    if let Err(e) = render_gpu_views(&loaded.precomputed, out_dir, &mut log) {
+        log.push(format!("GPU 渲染失败：{e}"));
+    }
+
+    let report = log.join("\n");
+    std::fs::write(out_dir.join("asset_verify_report.txt"), &report)?;
+    println!("{report}");
+    Ok(())
+}
+
 fn render_gpu_views(
     precomputed: &Precomputed,
     out_dir: &Path,
@@ -1678,13 +2187,30 @@ fn render_gpu_views(
 // Entry point
 // ---------------------------------------------------------------------------
 
+#[derive(Debug)]
+enum Startup {
+    /// Open the window and precompute the given HDR.
+    Env(PathBuf),
+    /// Open the window with a bundled asset package and optional scene file.
+    Asset {
+        manifest: PathBuf,
+        scene: Option<PathBuf>,
+    },
+}
+
 fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let args: Vec<String> = std::env::args().collect();
+    if args.len() > 1 && args[1] == "asset" {
+        return asset_cli::run(&args[1..]);
+    }
     let mut env_path = PathBuf::from(DEFAULT_ENV);
+    let mut env_explicit = false;
     let mut verify_only = false;
     let mut out_dir = PathBuf::from("artifacts");
     let mut no_cache = false;
+    let mut scene_path: Option<PathBuf> = None;
+    let mut asset_manifest: Option<PathBuf> = None;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -1692,6 +2218,19 @@ fn main() -> anyhow::Result<()> {
                 i += 1;
                 if let Some(p) = args.get(i) {
                     env_path = PathBuf::from(p);
+                    env_explicit = true;
+                }
+            }
+            "--asset" => {
+                i += 1;
+                if let Some(p) = args.get(i) {
+                    asset_manifest = Some(PathBuf::from(p));
+                }
+            }
+            "--scene" => {
+                i += 1;
+                if let Some(p) = args.get(i) {
+                    scene_path = Some(PathBuf::from(p));
                 }
             }
             "--verify" => verify_only = true,
@@ -1703,11 +2242,7 @@ fn main() -> anyhow::Result<()> {
             }
             "--no-cache" => no_cache = true,
             "--help" | "-h" => {
-                println!(
-                    "博物馆展品环境光预览器\n\
-                     用法：museum-lighting [--env 环境.hdr] [--verify] [--out 目录] [--no-cache]\n\
-                     不传参数直接打开交互窗口。--verify 无窗口运行校验并输出图像与报告。"
-                );
+                println!("{}", asset_cli::usage());
                 return Ok(());
             }
             other => eprintln!("未知参数：{other}（使用 --help 查看用法）"),
@@ -1715,16 +2250,50 @@ fn main() -> anyhow::Result<()> {
         i += 1;
     }
 
+    let startup = if let Some(scene) = scene_path {
+        let (_scene, manifest) = asset::load_scene(&scene)
+            .map_err(|e| anyhow::anyhow!("载入场景失败：{e}"))?;
+        Startup::Asset {
+            manifest,
+            scene: Some(scene),
+        }
+    } else if let Some(manifest) = asset_manifest {
+        Startup::Asset {
+            manifest,
+            scene: None,
+        }
+    } else if !env_explicit && !verify_only {
+        // The graphical entry point opens the bundled exhibit-lighting asset so
+        // viewers see the documented lighting out of the box. `--verify` keeps
+        // using the original sample environment below.
+        let manifest = PathBuf::from(asset::DEFAULT_MANIFEST);
+        if manifest.exists() {
+            Startup::Asset {
+                manifest,
+                scene: None,
+            }
+        } else {
+            Startup::Env(env_path)
+        }
+    } else {
+        Startup::Env(env_path)
+    };
     let settings = PrecomputeSettings {
         use_cache: !no_cache,
         ..PrecomputeSettings::default()
     };
     if verify_only {
-        return run_headless(&env_path, &out_dir, &settings);
+        return match startup {
+            Startup::Env(p) => run_headless(&p, &out_dir, &settings),
+            Startup::Asset { manifest, .. } => run_headless_asset(&manifest, &out_dir, &settings),
+        };
     }
 
     let event_loop = winit::event_loop::EventLoop::new()?;
-    let mut app = App::new(settings, env_path);
+    let mut app = match startup {
+        Startup::Env(p) => App::new(settings, p),
+        Startup::Asset { manifest, scene } => App::new_asset(settings, manifest, scene),
+    };
     event_loop.run_app(&mut app)?;
     Ok(())
 }

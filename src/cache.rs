@@ -16,6 +16,26 @@ pub const ALGORITHM_VERSION: u32 = 3;
 const PREFILTER_MAGIC: &[u8; 8] = b"MLPF0003";
 const SH_MAGIC: &[u8; 8] = b"MLSH0003";
 
+/// Where the prefiltered data came from. Reported verbatim in the lighting
+/// panel so a bundled asset is never described as a fresh rebuild or a cache
+/// hit, and vice versa.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PrecomputeOrigin {
+    Rebuilt,
+    DiskCache,
+    Asset { id: String },
+}
+
+impl PrecomputeOrigin {
+    pub fn label(&self) -> String {
+        match self {
+            Self::Rebuilt => "本次重建".to_string(),
+            Self::DiskCache => "磁盘缓存命中".to_string(),
+            Self::Asset { id } => format!("素材包 {id}"),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Precomputed {
     /// Prefiltered radiance cube maps, mip 0 = roughness 0.
@@ -24,7 +44,7 @@ pub struct Precomputed {
     /// reflection layer.
     pub sky: Vec<Vec<[f32; 3]>>,
     pub sh: [[f32; 3]; 9],
-    pub built_from_cache: bool,
+    pub origin: PrecomputeOrigin,
     pub compute_ms: f64,
 }
 
@@ -79,7 +99,7 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), EnvError> {
     Ok(())
 }
 
-fn encode_prefilter(prefilter: &[Vec<Vec<[f32; 3]>>], sample_count: u32) -> Vec<u8> {
+pub(crate) fn encode_prefilter(prefilter: &[Vec<Vec<[f32; 3]>>], sample_count: u32) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(PREFILTER_MAGIC);
     out.extend_from_slice(&PREFILTER_SIZE.to_le_bytes());
@@ -97,7 +117,7 @@ fn encode_prefilter(prefilter: &[Vec<Vec<[f32; 3]>>], sample_count: u32) -> Vec<
     out
 }
 
-fn decode_prefilter(
+pub(crate) fn decode_prefilter(
     bytes: &[u8],
     sample_count: u32,
 ) -> Result<Vec<Vec<Vec<[f32; 3]>>>, EnvError> {
@@ -169,7 +189,7 @@ pub fn precompute(
     let fp = fingerprint(source_sha, settings);
     let (_, prefilter_path, sh_path) = cache_paths(settings, &fp);
 
-    let mut built_from_cache = false;
+    let mut origin = PrecomputeOrigin::Rebuilt;
     let mut prefilter: Option<Vec<Vec<Vec<[f32; 3]>>>> = None;
     let mut sh: Option<[[f32; 3]; 9]> = None;
 
@@ -184,7 +204,7 @@ pub fn precompute(
             ) {
                 prefilter = Some(pf);
                 sh = Some(s);
-                built_from_cache = true;
+                origin = PrecomputeOrigin::DiskCache;
             }
         }
     }
@@ -211,7 +231,7 @@ pub fn precompute(
     let prefilter = prefilter.unwrap();
     let sh = sh.unwrap();
 
-    if settings.use_cache && !built_from_cache {
+    if settings.use_cache && origin == PrecomputeOrigin::Rebuilt {
         progress("写入预计算缓存…", 0.93);
         atomic_write(&prefilter_path, &encode_prefilter(&prefilter, settings.prefilter_samples))?;
         atomic_write(&sh_path, &encode_sh(&sh))?;
@@ -225,7 +245,7 @@ pub fn precompute(
         prefilter,
         sky,
         sh,
-        built_from_cache,
+        origin,
         compute_ms: started.elapsed().as_secs_f64() * 1000.0,
     };
     // A truncated or corrupt cache must not be handed to the renderer as if it

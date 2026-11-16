@@ -367,6 +367,46 @@ pub fn ground_plane(half_size: f32) -> Mesh {
     build(verts, vec![0, 1, 2, 0, 2, 3])
 }
 
+/// A flat panel leaning away from the viewer with its face tilted up toward
+/// the camera, so a high key light reflects onto it. UV x runs left-to-right
+/// across the width, which is the axis the roughness-ramp material maps to
+/// roughness.
+pub fn roughness_panel(half_width: f32, height: f32, tilt_deg: f32, cols: u32, rows: u32) -> Mesh {
+    let tilt = tilt_deg.to_radians();
+    let (tilt_sin, tilt_cos) = tilt.sin_cos();
+    let mut verts = Vec::new();
+    let mut indices = Vec::new();
+    for r in 0..=rows {
+        let v = r as f32 / rows as f32;
+        let y = v * height;
+        for c in 0..=cols {
+            let u = c as f32 / cols as f32;
+            let x = (u * 2.0 - 1.0) * half_width;
+            // Rotate about X at the bottom edge so the top leans away from the
+            // camera (-Z). A positive tilt here would overhang toward the
+            // viewer and point the face at the floor, reflecting only darkness.
+            let py = y * tilt_cos;
+            let pz = -y * tilt_sin;
+            let normal = Vec3::new(0.0, tilt_sin, tilt_cos).normalize();
+            verts.push(Vertex {
+                position: [x, py, pz],
+                normal: normal.to_array(),
+                tangent: [1.0, 0.0, 0.0, 1.0],
+                uv: [u, v],
+            });
+        }
+    }
+    let stride = cols + 1;
+    for r in 0..rows {
+        for c in 0..cols {
+            let a = r * stride + c;
+            let b = a + stride;
+            indices.extend_from_slice(&[a, b, a + 1, a + 1, b, b + 1]);
+        }
+    }
+    build(verts, indices)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum ExhibitKind {
     Pottery,
@@ -374,15 +414,18 @@ pub enum ExhibitKind {
     Sphere,
     Cube,
     Torus,
+    /// Flat panel whose roughness ramps from sharp (left) to rough (right).
+    Ramp,
 }
 
 impl ExhibitKind {
-    pub const ALL: [ExhibitKind; 5] = [
+    pub const ALL: [ExhibitKind; 6] = [
         ExhibitKind::Pottery,
         ExhibitKind::Bronze,
         ExhibitKind::Sphere,
         ExhibitKind::Cube,
         ExhibitKind::Torus,
+        ExhibitKind::Ramp,
     ];
 
     pub fn label(self) -> &'static str {
@@ -392,6 +435,7 @@ impl ExhibitKind {
             ExhibitKind::Sphere => "球体测试件",
             ExhibitKind::Cube => "立方体测试件",
             ExhibitKind::Torus => "圆环测试件",
+            ExhibitKind::Ramp => "粗糙度展板",
         }
     }
 
@@ -402,6 +446,7 @@ impl ExhibitKind {
             ExhibitKind::Sphere => "镜面球：读出环境方向与立方体接缝",
             ExhibitKind::Cube => "立方体：硬边高光，验证面朝向",
             ExhibitKind::Torus => "圆环：验证粗糙度与反射层变化",
+            ExhibitKind::Ramp => "粗糙度展板：左锐利到右粗糙，覆盖全部 mip 层",
         }
     }
 
@@ -412,6 +457,7 @@ impl ExhibitKind {
             ExhibitKind::Sphere => 0.55,
             ExhibitKind::Cube => 0.45,
             ExhibitKind::Torus => 0.16,
+            ExhibitKind::Ramp => 0.0,
         }
     }
 }
@@ -464,6 +510,13 @@ pub fn material_for(kind: ExhibitKind) -> Material {
             reflectance: 1.0,
             finish: 2,
         },
+        ExhibitKind::Ramp => Material {
+            base_color: [0.86, 0.87, 0.90],
+            roughness: 0.5,
+            metallic: 1.0,
+            reflectance: 1.0,
+            finish: 3,
+        },
     }
 }
 
@@ -478,6 +531,7 @@ pub fn build_exhibit(kind: ExhibitKind) -> Vec<Mesh> {
         ExhibitKind::Sphere => vec![uv_sphere(0.55, 72, 108)],
         ExhibitKind::Cube => vec![rounded_box(0.9, 0.09, 44)],
         ExhibitKind::Torus => vec![torus(0.42, 0.16, 108, 36)],
+        ExhibitKind::Ramp => vec![roughness_panel(0.82, 1.05, 16.77, 96, 24)],
     }
 }
 
@@ -499,6 +553,26 @@ mod tests {
                     v.position.iter().all(|c| c.is_finite())
                         && Vec3::from(v.normal).length() > 0.5
                 }));
+            }
+        }
+    }
+
+    #[test]
+    fn roughness_panel_spans_uv_x_and_leans_away() {
+        let mesh = roughness_panel(0.8, 1.0, 12.0, 8, 4);
+        let min_x = mesh.vertices.iter().map(|v| v.position[0]).fold(f32::INFINITY, f32::min);
+        let max_x = mesh.vertices.iter().map(|v| v.position[0]).fold(f32::NEG_INFINITY, f32::max);
+        assert!((max_x - min_x - 1.6).abs() < 1e-4);
+        for v in &mesh.vertices {
+            let u = v.uv[0];
+            let x = (u * 2.0 - 1.0) * 0.8;
+            assert!((v.position[0] - x).abs() < 1e-5);
+            // Top row leans away from the camera (-Z), bottom sits at z=0.
+            if v.uv[1] > 0.99 {
+                assert!(v.position[2] < -0.15);
+            }
+            if v.uv[1] < 0.01 {
+                assert!(v.position[2].abs() < 1e-6);
             }
         }
     }
